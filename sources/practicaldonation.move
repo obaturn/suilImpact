@@ -6,6 +6,14 @@ use sui::tx_context::{Self as tx_context, TxContext};
 use std::string::{Self, String};
 use std::string as string_std;
 use sui::transfer;
+use sui::coin::{Self, Coin};
+use sui::balance::{Self, Balance};
+use sui::sui::SUI;
+const E_NOT_OWNER: u64 = 1;
+const E_INSUFFICIENT_FUNDS: u64 = 2;
+const E_INVALID_AMOUNT : u64 =3;
+
+
 public struct DonationEvent has copy, drop {
     donor: address,
     amount: u64,
@@ -35,6 +43,14 @@ public struct DigitalAsset has store, copy, drop {
     description: String,
     asset_type: String, // e.g., "NFT", "Token", etc.
 }
+public struct Recipient has  store , drop{
+   
+    address: address,
+    help_needed: String,
+    verification_status: bool,
+    received_status: bool,
+    help_amount : u64,
+}
 public struct PracticalDonation has key, store {
     id: UID,
     owner: address,
@@ -45,8 +61,11 @@ public struct PracticalDonation has key, store {
     digital_assets: vector<DigitalAsset>,
     total_physical_value: u64,
     total_digital_value: u64,
+    balance: Balance<SUI>,
+    recipients: vector<Recipient>,
     
 }
+
 public fun create_practical_donation(ctx: &mut TxContext,
     owner: address,
     metadata_uri: vector<u64>,
@@ -62,13 +81,17 @@ public fun create_practical_donation(ctx: &mut TxContext,
         digital_assets: vector::empty<DigitalAsset>(),
         total_physical_value: 0,
         total_digital_value: 0,
+        balance: balance::zero<SUI>(),
+        recipients: vector::empty<Recipient>(),
     
     };
     prc
 }
 
-public fun donate(donation: &mut PracticalDonation, amount: u64, ctx: &mut TxContext) {
-    donation.total_money_donated = donation.total_money_donated+ amount;
+public fun donate(donation: &mut PracticalDonation, payment: Coin<SUI>, ctx: &mut TxContext) {
+    let amount = coin::value(&payment);
+    balance::join(&mut donation.balance, coin::into_balance(payment));
+    donation.total_money_donated = donation.total_money_donated + amount;
     event::emit(DonationEvent {
         donor: tx_context::sender(ctx),
         amount,
@@ -120,4 +143,73 @@ public fun donate_digital_asset<T: key + store>(
         category: DonationCategory::DIGITAL_ASSETS,
         data: DonationData::DigitalAsset { asset },
     });
+}
+public fun withdraw_funds(donation: &mut PracticalDonation, amount: u64, ctx: &mut TxContext) {
+    let caller = tx_context::sender(ctx);
+    assert!(caller == donation.owner, E_NOT_OWNER);
+
+    // Check if there's enough balance
+    assert!(balance::value(&donation.balance) >= amount, E_INSUFFICIENT_FUNDS);
+
+    // Check for valid amount
+    assert!(amount > 0, E_INVALID_AMOUNT);
+
+    // Withdraw the coins
+    let withdrawn_balance = balance::split(&mut donation.balance, amount);
+    let withdrawn_coin = coin::from_balance(withdrawn_balance, ctx);
+
+    // Transfer to owner
+    transfer::public_transfer(withdrawn_coin, donation.owner);
+
+    // Update total donated (subtracting the withdrawn amount)
+    donation.total_money_donated = donation.total_money_donated - amount;
+}
+
+public fun register_recipient(
+    donation: &mut PracticalDonation,
+    address: address,
+    help_needed: String,
+    help_amount: u64,
+) {
+    let recipient = Recipient {
+        address,
+        help_needed,
+        verification_status: false,
+        received_status: false,
+        help_amount,
+    };
+    vector::push_back(&mut donation.recipients, recipient);
+}
+public fun verify_recipient(donation: &mut PracticalDonation, index: u64 , ctx: &mut TxContext) {
+    let caller = tx_context::sender(ctx);
+    assert!(caller == donation.owner, E_NOT_OWNER);
+    let recipient_ref = vector::borrow_mut(&mut donation.recipients, index);
+    recipient_ref.verification_status = true;
+}
+public fun mark_recipient_received(donation: &mut PracticalDonation, index: u64) {
+    let recipient_ref = vector::borrow_mut(&mut donation.recipients, index);
+    recipient_ref.received_status = true;
+}
+public fun distribute_to_recipient(donation: &mut PracticalDonation, index: u64, ctx: &mut TxContext) {
+    let caller = tx_context::sender(ctx);
+    assert!(caller == donation.owner, E_NOT_OWNER);
+    let recipient_ref = vector::borrow(&donation.recipients, index);
+    assert!(recipient_ref.verification_status, E_INVALID_AMOUNT);
+
+    let amount = recipient_ref.help_amount;
+    assert!(balance::value(&donation.balance) >= amount, E_INSUFFICIENT_FUNDS);
+
+    let withdrawn_balance = balance::split(&mut donation.balance, amount);
+    let withdrawn_coin = coin::from_balance(withdrawn_balance, ctx);
+
+    transfer::public_transfer(withdrawn_coin, recipient_ref.address);
+
+    donation.total_money_donated = donation.total_money_donated - amount;
+}
+public fun get_recipient_count(donation: &PracticalDonation): u64 {
+    vector::length(&donation.recipients)
+}
+public fun confirm_help_received(donation: &mut PracticalDonation, index: u64) {
+    let recipient_ref = vector::borrow_mut(&mut donation.recipients, index);
+    recipient_ref.received_status = true;
 }
