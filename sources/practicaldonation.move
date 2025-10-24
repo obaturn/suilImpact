@@ -12,6 +12,10 @@ use sui::sui::SUI;
 const E_NOT_OWNER: u64 = 1;
 const E_INSUFFICIENT_FUNDS: u64 = 2;
 const E_INVALID_AMOUNT : u64 =3;
+const E_RECIPIENT_NOT_VERIFIED: u64 = 4;
+const E_INVALID_INDEX: u64 = 5;
+const E_INVALID_ADDRESS: u64 = 6;
+const E_RECIPIENT_ALREADY_VERIFIED: u64 = 7;
 
 
 public struct DonationEvent has copy, drop {
@@ -31,6 +35,28 @@ public enum DonationCategory has copy, drop {
     DIGITAL_ASSETS,
     
 }
+public struct RecipientRegistered has copy, drop {
+    recipient_address: address,
+    help_needed: String,
+    help_amount: u64,
+}
+
+public struct RecipientVerified has copy, drop {
+    recipient_index: u64,
+    recipient_address: address,
+}
+
+public struct FundsDistributed has copy, drop {
+    recipient_index: u64,
+    recipient_address: address,
+    amount: u64,
+}
+
+public struct HelpConfirmed has copy, drop {
+    recipient_index: u64,
+    recipient_address: address,
+}
+
 public struct PhysicalItems has store,copy, drop {
     name: String,
     description: String,
@@ -171,6 +197,10 @@ public fun register_recipient(
     help_needed: String,
     help_amount: u64,
 ) {
+    
+    assert!(address != @0x0, E_INVALID_ADDRESS);
+    assert!(help_amount > 0, E_INVALID_AMOUNT);
+
     let recipient = Recipient {
         address,
         help_needed,
@@ -179,22 +209,39 @@ public fun register_recipient(
         help_amount,
     };
     vector::push_back(&mut donation.recipients, recipient);
+    event::emit(RecipientRegistered {
+        recipient_address: address,
+        help_needed,
+        help_amount,
+    });
 }
 public fun verify_recipient(donation: &mut PracticalDonation, index: u64 , ctx: &mut TxContext) {
     let caller = tx_context::sender(ctx);
     assert!(caller == donation.owner, E_NOT_OWNER);
+
+    
+    assert!(index < vector::length(&donation.recipients), E_INVALID_INDEX);
+
     let recipient_ref = vector::borrow_mut(&mut donation.recipients, index);
+
+    // Check recipient is not already verified
+    assert!(!recipient_ref.verification_status, E_RECIPIENT_ALREADY_VERIFIED);
+
     recipient_ref.verification_status = true;
-}
-public fun mark_recipient_received(donation: &mut PracticalDonation, index: u64) {
-    let recipient_ref = vector::borrow_mut(&mut donation.recipients, index);
-    recipient_ref.received_status = true;
+    event::emit(RecipientVerified {
+        recipient_index: index,
+        recipient_address: recipient_ref.address,
+    });
 }
 public fun distribute_to_recipient(donation: &mut PracticalDonation, index: u64, ctx: &mut TxContext) {
     let caller = tx_context::sender(ctx);
     assert!(caller == donation.owner, E_NOT_OWNER);
+
+    // Validate index is within bounds
+    assert!(index < vector::length(&donation.recipients), E_INVALID_INDEX);
+
     let recipient_ref = vector::borrow(&donation.recipients, index);
-    assert!(recipient_ref.verification_status, E_INVALID_AMOUNT);
+    assert!(recipient_ref.verification_status, E_RECIPIENT_NOT_VERIFIED);
 
     let amount = recipient_ref.help_amount;
     assert!(balance::value(&donation.balance) >= amount, E_INSUFFICIENT_FUNDS);
@@ -205,11 +252,38 @@ public fun distribute_to_recipient(donation: &mut PracticalDonation, index: u64,
     transfer::public_transfer(withdrawn_coin, recipient_ref.address);
 
     donation.total_money_donated = donation.total_money_donated - amount;
+    event::emit(FundsDistributed {
+        recipient_index: index,
+        recipient_address: recipient_ref.address,
+        amount,
+    });
 }
 public fun get_recipient_count(donation: &PracticalDonation): u64 {
     vector::length(&donation.recipients)
 }
 public fun confirm_help_received(donation: &mut PracticalDonation, index: u64) {
+    
+    assert!(index < vector::length(&donation.recipients), E_INVALID_INDEX);
+
     let recipient_ref = vector::borrow_mut(&mut donation.recipients, index);
     recipient_ref.received_status = true;
+    event::emit(HelpConfirmed {
+        recipient_index: index,
+        recipient_address: recipient_ref.address,
+    });
+}
+public fun get_balance(donation: &PracticalDonation): u64 {
+    balance::value(&donation.balance)
+}
+public fun get_recipient(donation: &PracticalDonation, index: u64): &Recipient {
+    assert!(index < vector::length(&donation.recipients), E_INVALID_INDEX);
+    vector::borrow(&donation.recipients, index)
+}
+public fun get_total_donated(donation: &PracticalDonation): u64 {
+    donation.total_money_donated
+}
+public fun is_recipient_verified(donation: &PracticalDonation, index: u64): bool {
+    assert!(index < vector::length(&donation.recipients), E_INVALID_INDEX);
+    let recipient_ref = vector::borrow(&donation.recipients, index);
+    recipient_ref.verification_status
 }
